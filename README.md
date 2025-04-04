@@ -277,6 +277,11 @@ Project Link: [https://github.com/Yuri-NagaSaki/ImageFlow](https://github.com/Yu
 
 ---
 
+## ❤️ Thanks
+[YXVM](https://support.nodeget.com/page/promotion?id=80)赞助了本项目
+
+[NodeSupport](https://github.com/NodeSeekDev/NodeSupport)赞助了本项目
+
 <div align="center">
   <p>⭐ If you like this project, please give it a star! ⭐</p>
   <p>Made with ❤️ by Yuri NagaSaki</p>
