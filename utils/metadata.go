@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/redis/go-redis/v9"
 )
 
 // ImageMetadata stores metadata information for images
@@ -36,6 +37,7 @@ type MetadataStore interface {
 	GetMetadata(ctx context.Context, id string) (*ImageMetadata, error)
 	ListExpiredImages(ctx context.Context) ([]*ImageMetadata, error)
 	DeleteMetadata(ctx context.Context, id string) error
+	GetAllMetadata(ctx context.Context) ([]*ImageMetadata, error)
 }
 
 // LocalMetadataStore implements metadata storage for local filesystem
@@ -130,6 +132,39 @@ func (lms *LocalMetadataStore) ListExpiredImages(ctx context.Context) ([]*ImageM
 func (lms *LocalMetadataStore) DeleteMetadata(ctx context.Context, id string) error {
 	metadataPath := filepath.Join(lms.BasePath, "metadata", id+".json")
 	return os.Remove(metadataPath)
+}
+
+// GetAllMetadata retrieves all image metadata from local storage
+func (lms *LocalMetadataStore) GetAllMetadata(ctx context.Context) ([]*ImageMetadata, error) {
+	var allMetadata []*ImageMetadata
+	metadataDir := filepath.Join(lms.BasePath, "metadata")
+
+	// Read all files in the metadata directory
+	files, err := os.ReadDir(metadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read metadata directory: %v", err)
+	}
+
+	for _, file := range files {
+		if file.IsDir() || filepath.Ext(file.Name()) != ".json" {
+			continue
+		}
+
+		// Extract ID from filename
+		id := strings.TrimSuffix(file.Name(), ".json")
+
+		// Get metadata for this ID
+		metadata, err := lms.GetMetadata(ctx, id)
+		if err != nil {
+			log.Printf("Warning: Failed to get metadata for ID %s: %v", id, err)
+			continue
+		}
+
+		allMetadata = append(allMetadata, metadata)
+	}
+
+	log.Printf("Retrieved %d metadata entries from local storage", len(allMetadata))
+	return allMetadata, nil
 }
 
 // S3MetadataStore implements metadata storage for S3
@@ -240,11 +275,83 @@ func (sms *S3MetadataStore) DeleteMetadata(ctx context.Context, id string) error
 	return sms.client.Delete(ctx, key)
 }
 
+// GetAllMetadata retrieves all image metadata from S3
+func (s3ms *S3MetadataStore) GetAllMetadata(ctx context.Context) ([]*ImageMetadata, error) {
+	var allMetadata []*ImageMetadata
+
+	// List all metadata objects
+	metadataPrefix := "metadata/"
+
+	// Get S3 storage instance
+	s3Storage, ok := Storage.(*S3Storage)
+	if !ok {
+		return nil, fmt.Errorf("failed to get S3 storage instance")
+	}
+
+	objects, err := s3Storage.ListObjects(ctx, metadataPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list metadata objects: %v", err)
+	}
+
+	for _, obj := range objects {
+		// Skip if not a JSON file
+		if !strings.HasSuffix(obj.Key, ".json") {
+			continue
+		}
+
+		// Extract ID from key
+		id := strings.TrimSuffix(filepath.Base(obj.Key), ".json")
+
+		// Get metadata for this ID
+		metadata, err := s3ms.GetMetadata(ctx, id)
+		if err != nil {
+			log.Printf("Warning: Failed to get metadata for ID %s: %v", id, err)
+			continue
+		}
+
+		allMetadata = append(allMetadata, metadata)
+	}
+
+	log.Printf("Retrieved %d metadata entries from S3", len(allMetadata))
+	return allMetadata, nil
+}
+
 // Global metadata storage instance
 var MetadataManager MetadataStore
 
 // InitMetadataStore initializes the metadata storage
 func InitMetadataStore() error {
+	// Initialize Redis client if enabled
+	if err := InitRedisClient(); err != nil {
+		log.Printf("Warning: Failed to initialize Redis client: %v", err)
+		log.Printf("Falling back to file-based metadata storage")
+	}
+
+	// Use Redis metadata store if enabled
+	if RedisEnabled {
+		MetadataManager = NewRedisMetadataStore()
+		log.Printf("Redis metadata store initialized")
+
+		// Migrate existing metadata to Redis if needed
+		if _, err := RedisClient.Get(context.Background(), RedisPrefix+"migration_completed").Result(); err == redis.Nil {
+			log.Printf("Starting metadata migration to Redis...")
+			if err := MigrateMetadataToRedis(context.Background()); err != nil {
+				log.Printf("Warning: Failed to migrate metadata to Redis: %v", err)
+			} else {
+				// Mark migration as completed
+				RedisClient.Set(context.Background(), RedisPrefix+"migration_completed", time.Now().Format(time.RFC3339), 0)
+				log.Printf("Metadata migration to Redis completed successfully")
+			}
+		} else if err != nil {
+			log.Printf("Warning: Failed to check migration status: %v", err)
+		} else {
+			log.Printf("Metadata migration to Redis already completed")
+		}
+
+		return nil
+	}
+
+	// Fall back to file-based storage if Redis is not enabled
 	storageType := os.Getenv("STORAGE_TYPE")
 
 	if storageType == "s3" {

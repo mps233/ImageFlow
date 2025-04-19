@@ -1,46 +1,35 @@
 FROM golang:1.22-alpine AS backend-builder
-
 ENV GO111MODULE=on
-
 WORKDIR /app
-
 RUN apk add --no-cache git
-
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
-
 RUN CGO_ENABLED=0 GOOS=linux go build -o imageflow
 
-FROM oven/bun:1 AS frontend-builder
-
+FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm install --frozen-lockfile
+COPY frontend/. .
+RUN npm run build
 
-COPY frontend/package.json frontend/bun.lockb* ./
-
-RUN bun install --frozen-lockfile
-
-COPY frontend/ ./
-RUN bun run build
-
-FROM alpine:latest
-
+FROM alpine:latest AS release
 WORKDIR /app
-
 RUN apk add --no-cache \
     ca-certificates \
     libwebp-tools \
     libavif-apps \
     wget
 
-RUN mkdir -p /app/static/images/metadata && \
-    mkdir -p /app/static/images/original/landscape && \
-    mkdir -p /app/static/images/original/portrait && \
-    mkdir -p /app/static/images/landscape/webp && \
-    mkdir -p /app/static/images/landscape/avif && \
-    mkdir -p /app/static/images/portrait/webp && \
-    mkdir -p /app/static/images/portrait/avif
+RUN mkdir -p /app/static/images/metadata \
+    /app/static/images/original/landscape \
+    /app/static/images/original/portrait \
+    /app/static/images/landscape/webp \
+    /app/static/images/landscape/avif \
+    /app/static/images/portrait/webp \
+    /app/static/images/portrait/avif
+
 
 COPY --from=backend-builder /app/imageflow /app/
 COPY --from=backend-builder /app/config /app/config
@@ -61,9 +50,12 @@ ENV IMAGE_QUALITY="80"
 ENV WORKER_THREADS="4"
 ENV COMPRESSION_EFFORT="6"
 ENV FORCE_LOSSLESS="false"
+ENV REDIS_ENABLED="true"
+ENV REDIS_HOST="redis"
+ENV REDIS_PORT="6379"
+ENV REDIS_PASSWORD=""
+ENV REDIS_DB="0"
+ENV REDIS_PREFIX="imageflow:"
 
 EXPOSE 8686
-
 CMD ["./imageflow"]
-
-
